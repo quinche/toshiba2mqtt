@@ -1,0 +1,23 @@
+# toshiba2mqtt configuration
+# Copy this file to config.yaml and fill in your details.
+# config.yaml is git-ignored so your credentials never end up in the repo.
+
+# Logging verbosity: DEBUG | INFO | WARNING | ERROR
+log_level: INFO
+
+toshiba:
+  # Your Toshiba AC account (same credentials as the official Toshiba app).
+  username: "you@example.com"
+  password: "your-toshiba-password"
+  # Optional: a stable device id. Leave unset to let the library pick one.
+  # device_id: "3e6e4eb5f0e5aa46"
+  # Optional: reuse a previously issued SAS token. Normally leave unset.
+  # sas_token: ""
+
+mqtt:
+  host: "127.0.0.1"        # your Mosquitto broker
+  port: 1883
+  # username: "mqttuser"   # uncomment if your broker requires auth
+  # password: "mqttpass"
+  prefix: "toshiba2mqtt"   # base MQTT topic prefix
+  client_id: "toshiba2mqtt"

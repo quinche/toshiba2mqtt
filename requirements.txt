@@ -1,0 +1,4 @@
+# toshiba2mqtt runtime dependencies
+toshiba-ac-community>=0.6.0
+aiomqtt>=2.0.0
+PyYAML>=6.0

@@ -180,6 +180,7 @@ class Toshiba2Mqtt:
         self.devices_by_slug: dict[str, ToshibaAcDevice] = {}
         self._publish_queue: asyncio.Queue[tuple[str, str, bool]] = asyncio.Queue()
         self._stop = asyncio.Event()
+        self._shutdown_done = False
 
     # -- topic helpers ----------------------------------------------------- #
     def bridge_topic(self, leaf: str) -> str:
@@ -278,19 +279,38 @@ class Toshiba2Mqtt:
             # Subscribe to all command topics
             await mqtt.subscribe(f"{self.prefix}/+/set/+", qos=1)
 
-            # Run publisher + consumer concurrently
-            await asyncio.gather(
-                self._publisher_loop(),
-                self._consumer_loop(),
-                self._wait_stop(),
-            )
+            # Run publisher + consumer concurrently. As soon as the stop event
+            # fires (or any task fails), cancel the rest and return so the
+            # context manager can close the MQTT connection cleanly.
+            tasks = [
+                asyncio.create_task(self._publisher_loop(), name="publisher"),
+                asyncio.create_task(self._consumer_loop(), name="consumer"),
+                asyncio.create_task(self._wait_stop(), name="wait_stop"),
+            ]
+            try:
+                done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            finally:
+                for task in tasks:
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+
+            # Surface a real crash (not a normal stop) so the outer
+            # reconnect loop can react.
+            for task in tasks:
+                if task.cancelled():
+                    continue
+                exc = task.exception()
+                if exc is not None and not self._stop.is_set():
+                    raise exc
 
     async def _publisher_loop(self) -> None:
-        assert self.mqtt is not None
         while not self._stop.is_set():
             try:
                 topic, payload, retain = await asyncio.wait_for(self._publish_queue.get(), timeout=1.0)
             except asyncio.TimeoutError:
+                continue
+            if self.mqtt is None:
                 continue
             try:
                 await self.mqtt.publish(topic, payload, qos=1, retain=retain)
@@ -299,16 +319,32 @@ class Toshiba2Mqtt:
 
     async def _consumer_loop(self) -> None:
         assert self.mqtt is not None
-        async for message in self.mqtt.messages:
-            if self._stop.is_set():
-                break
-            await self._handle_incoming(message)
+        try:
+            async for message in self.mqtt.messages:
+                if self._stop.is_set():
+                    break
+                await self._handle_incoming(message)
+        except asyncio.CancelledError:
+            raise
 
     async def _wait_stop(self) -> None:
         await self._stop.wait()
 
+    def request_stop(self) -> None:
+        """Signal-handler safe: just set the stop event (idempotent).
+
+        The actual teardown happens in shutdown(), driven by the main loop
+        once the run() tasks have unwound. This avoids re-entrant shutdowns
+        when the user hits Ctrl-C multiple times.
+        """
+        if not self._stop.is_set():
+            logger.info("Stop requested, shutting down ...")
+            self._stop.set()
+
     async def shutdown(self) -> None:
-        logger.info("Shutting down ...")
+        if self._shutdown_done:
+            return
+        self._shutdown_done = True
         self._stop.set()
         if self.mqtt is not None:
             try:
@@ -363,26 +399,36 @@ async def main_async(config_path: str) -> None:
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:
-            loop.add_signal_handler(sig, lambda: asyncio.ensure_future(bridge.shutdown()))
+            loop.add_signal_handler(sig, bridge.request_stop)
         except NotImplementedError:  # pragma: no cover (Windows)
             pass
 
     backoff = 5
-    while not bridge._stop.is_set():
-        try:
-            await bridge.run()
-        except Exception:
-            logger.exception("Bridge crashed; reconnecting in %ss", backoff)
+    try:
+        while not bridge._stop.is_set():
             try:
-                await bridge.device_manager.shutdown()  # type: ignore[union-attr]
+                await bridge.run()
             except Exception:
-                pass
-            if bridge._stop.is_set():
+                logger.exception("Bridge crashed; reconnecting in %ss", backoff)
+                if bridge.device_manager is not None:
+                    try:
+                        await bridge.device_manager.shutdown()
+                    except Exception:
+                        pass
+                    bridge.device_manager = None
+                if bridge._stop.is_set():
+                    break
+                # Interruptible backoff: wake immediately on stop.
+                try:
+                    await asyncio.wait_for(bridge._stop.wait(), timeout=backoff)
+                except asyncio.TimeoutError:
+                    pass
+                backoff = min(backoff * 2, 300)
+            else:
                 break
-            await asyncio.sleep(backoff)
-            backoff = min(backoff * 2, 300)
-        else:
-            break
+    finally:
+        await bridge.shutdown()
+        logger.info("Shutdown complete.")
 
 
 def main() -> None:

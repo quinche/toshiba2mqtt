@@ -240,10 +240,26 @@ class Toshiba2Mqtt:
                 continue
             self.enqueue(self.dev_topic(slug, key), str(val), retain=True)
 
+    def publish_device_energy(self, device: ToshibaAcDevice) -> None:
+        consumption = device.ac_energy_consumption
+        if consumption is None:
+            return
+        slug = slugify(device.name)
+        self.enqueue(self.dev_topic(slug, "energy_wh"), str(consumption.energy_wh), retain=True)
+        payload = {
+            "energy_wh": consumption.energy_wh,
+            "since": consumption.since.isoformat() if consumption.since else None,
+        }
+        self.enqueue(self.dev_topic(slug, "energy"), json.dumps(payload), retain=True)
+
     # -- library callbacks ------------------------------------------------- #
     async def _on_state_changed(self, device: ToshibaAcDevice) -> None:
         logger.debug("State changed for '%s'", device.name)
         self.publish_device_state(device)
+
+    async def _on_energy_changed(self, device: ToshibaAcDevice) -> None:
+        logger.debug("Energy consumption changed for '%s'", device.name)
+        self.publish_device_energy(device)
 
     # -- MQTT command loop ------------------------------------------------- #
     async def _handle_incoming(self, message: "aiomqtt.Message") -> None:
@@ -310,6 +326,7 @@ class Toshiba2Mqtt:
                 slug = slugify(device.name)
                 self.devices_by_slug[slug] = device
                 device.on_state_changed_callback.add(self._on_state_changed)
+                device.on_energy_consumption_changed_callback.add(self._on_energy_changed)
                 logger.info("  - '%s' -> topic base %s/%s", device.name, self.prefix, slug)
                 self.enqueue(self.dev_topic(slug, "available"), "online", retain=True)
                 self.enqueue(
@@ -319,6 +336,7 @@ class Toshiba2Mqtt:
                 )
                 logger.info("    supported: %s", device.supported)
                 self.publish_device_state(device)
+                self.publish_device_energy(device)
 
             # Subscribe to all command topics
             await mqtt.subscribe(f"{self.prefix}/+/set/+", qos=1)

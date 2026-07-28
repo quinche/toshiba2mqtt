@@ -39,6 +39,8 @@ name from the Toshiba app (e.g. *"Living Room"* → `living_room`).
 | `toshiba2mqtt/<device>/available` | out (retained) | `online` / `offline` |
 | `toshiba2mqtt/<device>/supported` | out (retained) | JSON: which modes/features this unit supports |
 | `toshiba2mqtt/<device>/state` | out (retained) | full JSON state |
+| `toshiba2mqtt/<device>/energy_wh` | out (retained) | year-to-date energy in Wh (units that report it) |
+| `toshiba2mqtt/<device>/energy` | out (retained) | JSON: `energy_wh` + `since` timestamp |
 | `toshiba2mqtt/<device>/<attr>` | out (retained) | single attribute value |
 | `toshiba2mqtt/<device>/set/<attr>` | **in** | new value |
 
@@ -90,6 +92,14 @@ values for your specific hardware before wiring up openHAB.
 
 > Unsupported values for your specific unit/mode are silently ignored by the
 > Toshiba library (it only sends what the device advertises as supported).
+
+### Energy consumption
+
+Units that advertise `energy_report` publish their year-to-date energy use to
+`toshiba2mqtt/<device>/energy_wh` (a number in Wh) and a richer JSON version to
+`toshiba2mqtt/<device>/energy`. The Toshiba cloud refreshes this roughly every
+10 minutes, so treat it as a slow-moving cumulative counter, not a live power
+reading.
 
 ---
 

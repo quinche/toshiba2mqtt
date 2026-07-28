@@ -37,6 +37,7 @@ name from the Toshiba app (e.g. *"Living Room"* → `living_room`).
 |---|---|---|
 | `toshiba2mqtt/bridge/state` | out (retained, LWT) | `online` / `offline` |
 | `toshiba2mqtt/<device>/available` | out (retained) | `online` / `offline` |
+| `toshiba2mqtt/<device>/supported` | out (retained) | JSON: which modes/features this unit supports |
 | `toshiba2mqtt/<device>/state` | out (retained) | full JSON state |
 | `toshiba2mqtt/<device>/<attr>` | out (retained) | single attribute value |
 | `toshiba2mqtt/<device>/set/<attr>` | **in** | new value |
@@ -44,8 +45,30 @@ name from the Toshiba app (e.g. *"Living Room"* → `living_room`).
 ### State attributes (published)
 
 `power`, `mode`, `temperature`, `fan`, `swing`, `air_pure_ion`, `merit_a`,
-`power_select`, `indoor_temperature`, `outdoor_temperature`, `self_cleaning`,
-`wireless_led`.
+`merit_b`, `power_select`, `indoor_temperature`, `outdoor_temperature`,
+`self_cleaning`, `wireless_led`.
+
+### Capability discovery (`supported`)
+
+At startup each unit publishes a retained `toshiba2mqtt/<device>/supported`
+topic describing exactly what that unit can do, e.g.:
+
+```json
+{
+  "name": "Wohnzimmer",
+  "modes": ["AUTO", "COOL", "DRY", "FAN", "HEAT"],
+  "fan": ["AUTO", "QUIET", "LOW", "MEDIUM", "HIGH"],
+  "swing": ["OFF", "SWING_VERTICAL"],
+  "power_select": ["POWER_50", "POWER_75", "POWER_100"],
+  "merit_a": ["OFF", "HIGH_POWER", "ECO", "COMFORT"],
+  "merit_b": ["OFF"],
+  "air_pure_ion": ["OFF"],
+  "energy_report": false
+}
+```
+
+Subscribe to it (or read the bridge's startup log) to see the valid command
+values for your specific hardware before wiring up openHAB.
 
 ### Settable attributes (`set/<attr>`)
 
@@ -57,8 +80,13 @@ name from the Toshiba app (e.g. *"Living Room"* → `living_room`).
 | `fan` | `AUTO`, `QUIET`, `LOW`, `MEDIUM_LOW`, `MEDIUM`, `MEDIUM_HIGH`, `HIGH` |
 | `swing` | `OFF`, `SWING_VERTICAL`, `SWING_HORIZONTAL`, `SWING_VERTICAL_AND_HORIZONTAL`, `FIXED_1`…`FIXED_5`, `HADA` |
 | `air_pure_ion` | `ON`, `OFF` |
-| `merit_a` | `OFF`, `HIGH_POWER`, `ECO`, `COMFORT`, … (device dependent) |
+| `merit_a` | `OFF`, `HIGH_POWER`, `ECO`, `COMFORT`, `CDU_SILENT_1`, `CDU_SILENT_2`, `HEATING_8C`, `FLOOR`, `SLEEP_CARE` (device dependent) |
+| `merit_b` | `OFF`, `FIREPLACE_1`, `FIREPLACE_2` (device dependent) |
 | `power_select` | `50`, `75`, `100` |
+
+> **Tip:** Check each unit's `supported` topic (see above) for the exact
+> `merit_a` / `merit_b` / `swing` values your hardware accepts. Values the unit
+> doesn't support are silently ignored.
 
 > Unsupported values for your specific unit/mode are silently ignored by the
 > Toshiba library (it only sends what the device advertises as supported).

@@ -61,6 +61,7 @@ from toshiba_ac.device.properties import (
     ToshibaAcSwingMode,
     ToshibaAcAirPureIon,
     ToshibaAcMeritA,
+    ToshibaAcMeritB,
     ToshibaAcPowerSelection,
 )
 
@@ -125,6 +126,9 @@ async def apply_command(device: ToshibaAcDevice, attr: str, payload: str) -> Non
         elif attr == "merit_a":
             await device.set_ac_merit_a(ToshibaAcMeritA[upper])
 
+        elif attr == "merit_b":
+            await device.set_ac_merit_b(ToshibaAcMeritB[upper])
+
         elif attr == "power_select":
             if value not in POWER_SELECT_MAP:
                 raise ValueError(f"power_select must be one of {list(POWER_SELECT_MAP)}")
@@ -159,11 +163,45 @@ def device_state_dict(device: ToshibaAcDevice) -> dict[str, t.Any]:
         "swing": pretty(device.ac_swing_mode),
         "air_pure_ion": pretty(device.ac_air_pure_ion),
         "merit_a": pretty(device.ac_merit_a),
+        "merit_b": pretty(device.ac_merit_b),
         "power_select": pretty(device.ac_power_selection),
         "indoor_temperature": device.ac_indoor_temperature,
         "outdoor_temperature": device.ac_outdoor_temperature,
         "self_cleaning": pretty(device.ac_self_cleaning),
         "wireless_led": pretty(device.ac_wireless_led),
+    }
+
+
+def _supported_values(items: t.Iterable[t.Any]) -> list[str]:
+    """Turn a list of feature enums into clean string values, dropping the
+    internal NONE placeholder."""
+    out: list[str] = []
+    for item in items:
+        name = pretty(item)
+        if name == "NONE":
+            continue
+        if name not in out:
+            out.append(name)
+    return out
+
+
+def device_supported_dict(device: ToshibaAcDevice) -> dict[str, t.Any]:
+    """Build a JSON-serialisable description of what a device can do.
+
+    Published once per device to <prefix>/<slug>/supported so consumers
+    (and humans configuring openHAB) can see the valid values up front.
+    """
+    feats = device.supported
+    return {
+        "name": device.name,
+        "modes": _supported_values(feats.ac_mode),
+        "fan": _supported_values(feats.ac_fan_mode),
+        "swing": _supported_values(feats.ac_swing_mode),
+        "power_select": _supported_values(feats.ac_power_selection),
+        "merit_a": _supported_values(feats.ac_merit_a),
+        "merit_b": _supported_values(feats.ac_merit_b),
+        "air_pure_ion": _supported_values(feats.ac_air_pure_ion),
+        "energy_report": bool(feats.ac_energy_report),
     }
 
 
@@ -274,6 +312,12 @@ class Toshiba2Mqtt:
                 device.on_state_changed_callback.add(self._on_state_changed)
                 logger.info("  - '%s' -> topic base %s/%s", device.name, self.prefix, slug)
                 self.enqueue(self.dev_topic(slug, "available"), "online", retain=True)
+                self.enqueue(
+                    self.dev_topic(slug, "supported"),
+                    json.dumps(device_supported_dict(device)),
+                    retain=True,
+                )
+                logger.info("    supported: %s", device.supported)
                 self.publish_device_state(device)
 
             # Subscribe to all command topics

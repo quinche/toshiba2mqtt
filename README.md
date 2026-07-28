@@ -162,7 +162,20 @@ Or provide secrets via environment variables instead of a config file:
 
 ## openHAB integration
 
-Assuming you already have the **MQTT binding** and a broker Thing configured.
+> **👍 Recommended: use the dedicated native binding.**
+> There is a companion openHAB add-on that talks to this service directly and
+> **auto-discovers** your AC units (by listening to the retained
+> `<prefix>/+/supported` topics), so you don't have to hand-write channels:
+>
+> **➡️ [openhab-toshiba2mqtt-binding](https://github.com/quinche/openhab-toshiba2mqtt-binding)**
+>
+> Install that binding, add one bridge Thing (broker host/port/credentials/prefix),
+> and the ACs appear in your Inbox automatically. The manual Generic-MQTT setup
+> below still works and is a good fallback if you prefer plain text configuration
+> or don't want to install a custom add-on.
+
+The steps below use the **generic MQTT binding** instead of the native binding.
+They assume you already have the MQTT binding and a broker Thing configured.
 
 ### 1. Thing (`.things` file)
 

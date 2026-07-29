@@ -247,6 +247,82 @@ slug. Not sure of the slug? Watch the bridge log at startup — it prints
 `'<Name>' -> topic base toshiba2mqtt/<slug>` for every unit, or just subscribe to
 `toshiba2mqtt/#` with `mosquitto_sub` and read the topics.
 
+### 4. Auto-off timer (optional)
+
+The Toshiba cloud/library does not expose the app's built-in on/off timer, but
+you can build a far more flexible one entirely in openHAB: a "switch off in N
+minutes" countdown. It's just two extra Items plus a rule per unit — no changes
+to this bridge are needed. This reuses the `power` channel from the Thing above.
+
+**Items** (`.items`):
+
+```java
+Number Toshiba_Living_OffTimer   "Switch off in [%d min]" (gToshibaLiving)
+String Toshiba_Living_TimerState "Timer [%s]"             (gToshibaLiving)
+```
+
+**Rule** (`.rules`) — one timer variable + two rules per unit (set the countdown,
+and auto-cancel if the unit is switched off manually):
+
+```java
+var Timer tOffLiving = null
+
+rule "Toshiba Living Off-Timer"
+when
+    Item Toshiba_Living_OffTimer received command
+then
+    if (tOffLiving !== null) { tOffLiving.cancel(); tOffLiving = null }
+    val int mins = (receivedCommand as Number).intValue
+    if (mins <= 0) {
+        Toshiba_Living_TimerState.postUpdate("off")
+    } else {
+        Toshiba_Living_TimerState.postUpdate(mins + " min")
+        tOffLiving = createTimer(now.plusMinutes(mins), [ |
+            sendCommand(Toshiba_Living_Power, "OFF")
+            Toshiba_Living_TimerState.postUpdate("off")
+            Toshiba_Living_OffTimer.postUpdate(0)
+            tOffLiving = null
+        ])
+    }
+end
+
+rule "Toshiba Living Timer cancel on manual off"
+when
+    Item Toshiba_Living_Power changed to OFF
+then
+    if (tOffLiving !== null) {
+        tOffLiving.cancel(); tOffLiving = null
+        Toshiba_Living_TimerState.postUpdate("off")
+        Toshiba_Living_OffTimer.postUpdate(0)
+    }
+end
+```
+
+**Sitemap**:
+
+```perl
+Setpoint item=Toshiba_Living_OffTimer label="Switch off in [%d min]" minValue=0 maxValue=480 step=15
+Text     item=Toshiba_Living_TimerState
+```
+
+Behaviour:
+
+- Set the minutes → the unit powers off automatically when the countdown ends.
+- Setting a new value while a timer runs replaces the old one.
+- Setting `0` cancels the timer.
+- Switching the unit off manually cancels any pending timer (no ghost timers).
+- The timer is in-memory, so it does **not** survive an openHAB restart — fine
+  for an auto-off timer.
+
+Duplicate the variable and both rules for each additional unit (e.g.
+`tOffBedroom`, `Toshiba_Bedroom_*`). Tip: test with a small value like `1` first
+to confirm the unit actually powers off.
+
+> If you use the native
+> [openhab-toshiba2mqtt-binding](https://github.com/quinche/openhab-toshiba2mqtt-binding),
+> the item names differ (e.g. `toshiba2mqtt:ac:local:living:power`) but the rule
+> logic is identical — just point `sendCommand` at that binding's power Item.
+
 ---
 
 ## Debugging

@@ -139,48 +139,69 @@ async def main() -> None:
     hour = now.hour
 
     # --- Candidate probes -------------------------------------------------
-    # We vary the `Type` string and the From/To window format. The baseline
-    # (EnergyYear) is what the library uses and is known to work; the rest are
-    # educated guesses based on typical Toshiba/Azure energy APIs.
+    # KEY INSIGHT from the first run: `Type=EnergyYear` with window
+    # From="2026" / To="2027" returns TWELVE monthly buckets (Time "01".. "12").
+    # So the pattern seems to be: the window is expressed at ONE granularity
+    # coarser than the buckets you get back, and the string format matches that
+    # granularity. Following that logic:
+    #   - monthly buckets  <- window in YEARS   ("2026"/"2027")   [CONFIRMED]
+    #   - daily buckets     <- window in MONTHS  ("202607"/"202608")
+    #   - hourly buckets    <- window in DAYS    ("20260729"/"20260730")
+    # We probe that hypothesis with several Type spellings + window formats,
+    # plus a few timezone / param-name variants.
     base = {"ACDeviceUniqueIdList": unique_ids, "Timezone": "UTC"}
+    base_local = {"ACDeviceUniqueIdList": unique_ids, "Timezone": "Europe/Zurich"}
+
+    _tomorrow = now + dt.timedelta(days=1)
+    ymd = f"{year:04d}{month:02d}{day:02d}"
+    ymd_next = f"{_tomorrow.year:04d}{_tomorrow.month:02d}{_tomorrow.day:02d}"
+    ym = f"{year:04d}{month:02d}"
+    ym_next = f"{year:04d}{month + 1:02d}" if month < 12 else f"{year + 1:04d}01"
+    ymd_dash = f"{year:04d}-{month:02d}-{day:02d}"
 
     probes: list[tuple[str, dict]] = []
 
-    # Baseline (known-good) — proves auth + shows yearly shape.
-    probes.append(("EnergyYear (baseline, known-good)", {
+    # Baseline (known-good) — proves auth + shows the monthly shape again.
+    probes.append(("EnergyYear (baseline, known-good -> monthly buckets)", {
         **base, "FromUtcTime": str(year), "ToUtcTime": str(year + 1), "Type": "EnergyYear",
     }))
 
-    # Hourly candidates — several plausible Type strings + window formats.
-    ymd = f"{year:04d}{month:02d}{day:02d}"
-    ymd_dash = f"{year:04d}-{month:02d}-{day:02d}"
-    probes.append(("EnergyHour (YYYYMMDD window)", {
-        **base, "FromUtcTime": ymd, "ToUtcTime": ymd, "Type": "EnergyHour",
-    }))
+    # --- DAILY buckets: window in MONTHS -------------------------------
+    for typ in ("EnergyMonth", "EnergyDay", "Month", "Day"):
+        probes.append((f"{typ} (month window {ym}->{ym_next}) [expect daily buckets]", {
+            **base, "FromUtcTime": ym, "ToUtcTime": ym_next, "Type": typ,
+        }))
+
+    # --- HOURLY buckets: window in DAYS --------------------------------
+    for typ in ("EnergyDay", "EnergyHour", "Day", "Hour"):
+        probes.append((f"{typ} (day window {ymd}->{ymd_next}) [expect hourly buckets]", {
+            **base, "FromUtcTime": ymd, "ToUtcTime": ymd_next, "Type": typ,
+        }))
+    # Same-day window (From==To), which is what the monthly call effectively does
+    for typ in ("EnergyDay", "EnergyHour"):
+        probes.append((f"{typ} (same-day window {ymd}) [expect hourly buckets]", {
+            **base, "FromUtcTime": ymd, "ToUtcTime": ymd, "Type": typ,
+        }))
+
+    # --- Format / param variants for the day window --------------------
     probes.append(("EnergyHour (dashed date window)", {
         **base, "FromUtcTime": ymd_dash, "ToUtcTime": ymd_dash, "Type": "EnergyHour",
     }))
-    probes.append(("EnergyHour (full ISO datetime window)", {
+    probes.append(("EnergyHour (full ISO datetime window, Z)", {
         **base,
-        "FromUtcTime": f"{ymd_dash}T00:00:00",
-        "ToUtcTime": f"{ymd_dash}T23:59:59",
+        "FromUtcTime": f"{ymd_dash}T00:00:00Z",
+        "ToUtcTime": f"{ymd_dash}T23:59:59Z",
         "Type": "EnergyHour",
     }))
-    probes.append(("Hour (short Type)", {
-        **base, "FromUtcTime": ymd, "ToUtcTime": ymd, "Type": "Hour",
-    }))
-    probes.append(("EnergyHourly (alt spelling)", {
-        **base, "FromUtcTime": ymd, "ToUtcTime": ymd, "Type": "EnergyHourly",
+    probes.append(("EnergyDay day-window in LOCAL tz (Europe/Zurich)", {
+        **base_local, "FromUtcTime": ymd, "ToUtcTime": ymd_next, "Type": "EnergyDay",
     }))
 
-    # Daily candidates — for a monthly window (useful as fallback granularity).
-    ym = f"{year:04d}{month:02d}"
-    probes.append(("EnergyDay (YYYYMM window)", {
-        **base, "FromUtcTime": ym, "ToUtcTime": ym, "Type": "EnergyDay",
-    }))
-    probes.append(("EnergyMonth (year window)", {
-        **base, "FromUtcTime": str(year), "ToUtcTime": str(year + 1), "Type": "EnergyMonth",
-    }))
+    # --- Wildcard alternative Type spellings (same-day window) ----------
+    for typ in ("EnergyHourly", "Hourly", "EnergyDaily", "Daily", "EnergyWeek"):
+        probes.append((f"{typ} (day window {ymd}->{ymd_next})", {
+            **base, "FromUtcTime": ymd, "ToUtcTime": ymd_next, "Type": typ,
+        }))
 
     for label, post in probes:
         await probe(api, label, post)
@@ -188,8 +209,10 @@ async def main() -> None:
 
     print("\n" + "=" * 70)
     print("DONE. Copy everything above back to Clawee.")
-    print("Look for the probe whose RESPONSE contains a per-hour breakdown")
-    print("(a list of ~24 Energy values), that's the one we build on.")
+    print("WHAT TO LOOK FOR:")
+    print("  * hourly win: EnergyConsumption with ~24 entries, Time '00'..'23'")
+    print("  * daily win:  EnergyConsumption with ~28-31 entries, Time '01'..'31'")
+    print("  * null EnergyConsumption = that Type/window combo is NOT supported.")
 
 
 if __name__ == "__main__":

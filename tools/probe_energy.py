@@ -72,7 +72,7 @@ def fmt(obj) -> str:
         return repr(obj)
 
 
-async def probe(api: ToshibaAcHttpApi, unique_ids: list[str], label: str, post: dict) -> None:
+async def probe(api: ToshibaAcHttpApi, label: str, post: dict) -> None:
     print("\n" + "=" * 70)
     print(f"PROBE: {label}")
     print("  request:", json.dumps(post, default=str))
@@ -108,11 +108,29 @@ async def main() -> None:
 
     print("Fetching device list ...")
     devices = await api.get_devices()
-    unique_ids = [d.ac_unique_id for d in devices]
+
+    def pick(obj, *names):
+        for n in names:
+            if hasattr(obj, n):
+                v = getattr(obj, n)
+                if v:
+                    return v
+        return None
+
+    unique_ids = []
     for d in devices:
-        print(f"  - {d.name!r}: unique_id={d.ac_unique_id} id={d.ac_id}")
+        uid = pick(d, "ac_unique_id", "unique_id", "device_unique_id", "ac_id", "id")
+        name = pick(d, "name", "ac_name", "label") or "?"
+        if uid:
+            unique_ids.append(uid)
+        # Show every public field so we can adapt if the shape differs again.
+        fields = {k: v for k, v in vars(d).items()} if hasattr(d, "__dict__") else {}
+        if not fields:
+            fields = {a: getattr(d, a) for a in dir(d) if not a.startswith("_") and not callable(getattr(d, a))}
+        print(f"  - name={name!r} unique_id={uid}")
+        print(f"      all fields: {fields}")
     if not unique_ids:
-        sys.exit("No devices found on this account.")
+        sys.exit("No device unique ids found on this account.")
 
     now = dt.datetime.now(dt.timezone.utc)
     year = now.year
@@ -165,14 +183,13 @@ async def main() -> None:
     }))
 
     for label, post in probes:
-        await probe(api, unique_ids, label, post)
+        await probe(api, label, post)
         await asyncio.sleep(1.0)  # be polite to the WAF/rate-limiter
 
     print("\n" + "=" * 70)
     print("DONE. Copy everything above back to Clawee.")
     print("Look for the probe whose RESPONSE contains a per-hour breakdown")
     print("(a list of ~24 Energy values), that's the one we build on.")
-    await api.shutdown()
 
 
 if __name__ == "__main__":

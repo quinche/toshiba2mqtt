@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import datetime as _dt
 import json
 import logging
 import os
@@ -227,6 +228,9 @@ class Toshiba2Mqtt:
     def dev_topic(self, slug: str, leaf: str) -> str:
         return f"{self.prefix}/{slug}/{leaf}"
 
+    def total_topic(self, leaf: str) -> str:
+        return f"{self.prefix}/total/{leaf}"
+
     # -- publishing -------------------------------------------------------- #
     def enqueue(self, topic: str, payload: str, retain: bool = True) -> None:
         self._publish_queue.put_nowait((topic, payload, retain))
@@ -251,6 +255,114 @@ class Toshiba2Mqtt:
             "since": consumption.since.isoformat() if consumption.since else None,
         }
         self.enqueue(self.dev_topic(slug, "energy"), json.dumps(payload), retain=True)
+
+    # -- monthly energy breakdown ----------------------------------------- #
+    #
+    # The Toshiba "EnergyYear" endpoint actually returns a *per-month* breakdown
+    # (Time "01".."12" with an Energy value in Wh), not a single yearly figure.
+    # The protocol library sums it into one running counter; here we fetch the
+    # raw response ourselves and publish the monthly detail plus a current-month
+    # value, for each unit and as a total across all units.
+    async def fetch_and_publish_monthly_energy(self) -> None:
+        dm = self.device_manager
+        if dm is None or dm.http_api is None:
+            return
+
+        # Map ac_unique_id -> slug so we can label the raw response.
+        uid_to_slug: dict[str, str] = {}
+        for slug, device in self.devices_by_slug.items():
+            uid = getattr(device, "ac_unique_id", None)
+            if uid:
+                uid_to_slug[uid] = slug
+        if not uid_to_slug:
+            return
+
+        year = _dt.datetime.now().year
+        post = {
+            "ACDeviceUniqueIdList": list(uid_to_slug.keys()),
+            "FromUtcTime": str(year),
+            "ToUtcTime": str(year + 1),
+            "Timezone": "UTC",
+            "Type": "EnergyYear",
+        }
+        try:
+            res = await dm.http_api.request_api(
+                dm.http_api.AC_ENERGY_CONSUMPTION_PATH, post=post
+            )
+        except Exception as e:  # best-effort poll
+            logger.warning("Monthly energy fetch failed: %s", e)
+            return
+        if not isinstance(res, list):
+            return
+
+        this_month = _dt.datetime.now().month  # 1..12
+        total_months = [0.0] * 12
+        got_any = False
+
+        for ac in res:
+            if not isinstance(ac, dict):
+                continue
+            uid = ac.get("ACDeviceUniqueId")
+            slug = uid_to_slug.get(uid)
+            if not slug:
+                continue
+            consumption = ac.get("EnergyConsumption")
+            months = [0.0] * 12
+            if isinstance(consumption, list):
+                for entry in consumption:
+                    try:
+                        idx = int(entry["Time"]) - 1  # "01" -> 0
+                        if 0 <= idx < 12:
+                            val = float(entry["Energy"])
+                            months[idx] = val
+                            total_months[idx] += val
+                    except (KeyError, ValueError, TypeError):
+                        continue
+                got_any = True
+
+            monthly_map = {f"{m + 1:02d}": months[m] for m in range(12)}
+            self.enqueue(
+                self.dev_topic(slug, "energy_monthly"),
+                json.dumps({"year": year, "unit": "Wh", "months": monthly_map}),
+                retain=True,
+            )
+            self.enqueue(
+                self.dev_topic(slug, "energy_this_month"),
+                str(months[this_month - 1]),
+                retain=True,
+            )
+
+        if got_any:
+            total_map = {f"{m + 1:02d}": total_months[m] for m in range(12)}
+            self.enqueue(
+                self.total_topic("energy_monthly"),
+                json.dumps({"year": year, "unit": "Wh", "months": total_map}),
+                retain=True,
+            )
+            self.enqueue(
+                self.total_topic("energy_this_month"),
+                str(total_months[this_month - 1]),
+                retain=True,
+            )
+            self.enqueue(
+                self.total_topic("energy_wh"),
+                str(sum(total_months)),
+                retain=True,
+            )
+            logger.debug(
+                "Published monthly energy (this month total: %.0f Wh)",
+                total_months[this_month - 1],
+            )
+
+    async def _monthly_energy_loop(self) -> None:
+        # Poll a bit after startup, then every 15 minutes (the cloud refreshes
+        # roughly every 10). Interruptible so shutdown stays snappy.
+        while not self._stop.is_set():
+            await self.fetch_and_publish_monthly_energy()
+            try:
+                await asyncio.wait_for(self._stop.wait(), timeout=15 * 60)
+            except asyncio.TimeoutError:
+                pass
 
     # -- library callbacks ------------------------------------------------- #
     async def _on_state_changed(self, device: ToshibaAcDevice) -> None:
@@ -347,6 +459,7 @@ class Toshiba2Mqtt:
             tasks = [
                 asyncio.create_task(self._publisher_loop(), name="publisher"),
                 asyncio.create_task(self._consumer_loop(), name="consumer"),
+                asyncio.create_task(self._monthly_energy_loop(), name="monthly_energy"),
                 asyncio.create_task(self._wait_stop(), name="wait_stop"),
             ]
             try:

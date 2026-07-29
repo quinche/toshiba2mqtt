@@ -41,6 +41,11 @@ name from the Toshiba app (e.g. *"Living Room"* → `living_room`).
 | `toshiba2mqtt/<device>/state` | out (retained) | full JSON state |
 | `toshiba2mqtt/<device>/energy_wh` | out (retained) | year-to-date energy in Wh (units that report it) |
 | `toshiba2mqtt/<device>/energy` | out (retained) | JSON: `energy_wh` + `since` timestamp |
+| `toshiba2mqtt/<device>/energy_monthly` | out (retained) | JSON: per-month energy breakdown for the current year (Wh) |
+| `toshiba2mqtt/<device>/energy_this_month` | out (retained) | current month's energy in Wh |
+| `toshiba2mqtt/total/energy_monthly` | out (retained) | JSON: per-month breakdown summed across all units (Wh) |
+| `toshiba2mqtt/total/energy_this_month` | out (retained) | current month's energy summed across all units (Wh) |
+| `toshiba2mqtt/total/energy_wh` | out (retained) | year-to-date energy summed across all units (Wh) |
 | `toshiba2mqtt/<device>/<attr>` | out (retained) | single attribute value |
 | `toshiba2mqtt/<device>/set/<attr>` | **in** | new value |
 
@@ -100,6 +105,21 @@ Units that advertise `energy_report` publish their year-to-date energy use to
 `toshiba2mqtt/<device>/energy`. The Toshiba cloud refreshes this roughly every
 10 minutes, so treat it as a slow-moving cumulative counter, not a live power
 reading.
+
+**Monthly breakdown.** The bridge additionally polls the cloud every ~15 minutes
+and publishes a **per-month** breakdown for the current year:
+
+- `toshiba2mqtt/<device>/energy_monthly` — JSON, e.g.
+  `{"year": 2026, "unit": "Wh", "months": {"01": 1488, "02": 1344, ..., "12": 0}}`
+- `toshiba2mqtt/<device>/energy_this_month` — the current month's Wh as a number
+
+The same figures summed across **all** units are published under
+`toshiba2mqtt/total/energy_monthly`, `toshiba2mqtt/total/energy_this_month` and
+`toshiba2mqtt/total/energy_wh`.
+
+> Note: what the underlying API calls "EnergyYear" is really a monthly
+> breakdown. Finer (hourly/daily) granularity is not currently exposed by the
+> cloud endpoint this bridge can reach.
 
 ---
 
